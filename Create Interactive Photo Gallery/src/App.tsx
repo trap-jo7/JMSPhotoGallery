@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type Photo = { id: string; src: string; caption?: string };
+type Photo = { id: string; src: string; caption?: string; blob?: Blob };
 type Album = { id: string; name: string; photos: Photo[] };
 type RGB = [number, number, number];
 
@@ -83,6 +83,53 @@ function useDark() {
 const TRACK = 588;
 const THUMB = 133;
 
+// ---- saving photos in the browser (IndexedDB) ----
+const DB_NAME = "photo-gallery";
+const STORE = "kv";
+
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function loadSaved(): Promise<Album[] | null> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(STORE).objectStore(STORE).get("albums");
+    req.onsuccess = () => {
+      const saved = req.result as Album[] | undefined;
+      resolve(
+        saved
+          ? saved.map((a) => ({
+              ...a,
+              photos: a.photos.map((p) => (p.blob ? { ...p, src: URL.createObjectURL(p.blob) } : p)),
+            }))
+          : null,
+      );
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveAlbums(albums: Album[]) {
+  const db = await openDb();
+  // blob: URLs die on reload, so store the file itself and rebuild the URL on load
+  const clean = albums.map((a) => ({
+    ...a,
+    photos: a.photos.map((p) => (p.blob ? { id: p.id, caption: p.caption, blob: p.blob, src: "" } : p)),
+  }));
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(clean, "albums");
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 export default function App() {
   const [albums, setAlbums] = useState<Album[]>(initialAlbums);
   const [pos, setPos] = useState(2); // global position across all albums
@@ -91,10 +138,29 @@ export default function App() {
   const [dropHover, setDropHover] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [accent, setAccent] = useState(FALLBACK);
+  const [loaded, setLoaded] = useState(false);
   const dark = useDark();
   const trackRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const grab = useRef(0);
+
+  // load saved albums once on startup
+  useEffect(() => {
+    loadSaved()
+      .then((saved) => {
+        if (!saved) return;
+        setAlbums(saved);
+        const count = saved.reduce((n, a) => n + a.photos.length, 0);
+        setPos((p) => Math.min(p, Math.max(0, count - 1)));
+      })
+      .catch(() => {})
+      .finally(() => setLoaded(true));
+  }, []);
+
+  // save whenever albums change (after the initial load has finished)
+  useEffect(() => {
+    if (loaded) saveAlbums(albums).catch(() => {});
+  }, [albums, loaded]);
 
   const starts = useMemo(() => {
     let s = 0;
@@ -151,7 +217,11 @@ export default function App() {
   const addFiles = (list: FileList | null) => {
     const files = Array.from(list ?? []).filter((f) => f.type.startsWith("image/"));
     if (!files.length) return;
-    const added = files.map((f, i) => ({ id: `u-${Date.now()}-${i}`, src: URL.createObjectURL(f) }));
+    const added = files.map((f, i) => ({
+      id: `u-${Date.now()}-${i}`,
+      src: URL.createObjectURL(f),
+      blob: f,
+    }));
     updateAlbum((p) => [...p, ...added]);
     setPos(starts[ai] + album.photos.length);
   };
