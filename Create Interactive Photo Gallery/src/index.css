@@ -1,0 +1,6 @@
+@import 'tailwindcss';
+
+body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #e9e7f7; }
+@media (prefers-color-scheme: dark) { body { background: #1d1b45; } }
+@keyframes fade { from { opacity: 0 } }
+@keyframes zoom { from { opacity: 0; transform: scale(.92) } }
